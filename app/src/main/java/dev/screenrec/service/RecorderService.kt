@@ -105,7 +105,12 @@ class RecorderService : Service(), RecordingController.Callbacks {
             val started =
                 controller.start(token, config, DisplayMetricsSnapshot.from(this), this)
             if (!started) {
+                // Nothing downstream owns the token yet, so releasing it here is the only
+                // thing standing between a failed start and the system believing the screen is
+                // still being shared until the process dies.
                 machine.transitionTo(RecordingState.IDLE)
+                stopProjection()
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
         }
@@ -181,14 +186,26 @@ class RecorderService : Service(), RecordingController.Callbacks {
         machine.transitionTo(RecordingState.IDLE)
         handler.removeCallbacks(counterTick)
         overlay.hideAll()
-        projection = null
+        stopProjection()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * The service owns the projection token from getMediaProjection to stop(), because every
+     * other candidate owner has exit paths where it was never constructed. Leaving it running
+     * makes the system keep showing "You're currently sharing your entire screen", and the
+     * next recording cannot start until the process is killed.
+     */
+    private fun stopProjection() {
+        projection?.stop()
+        projection = null
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(counterTick)
         overlay.hideAll()
+        stopProjection()
         super.onDestroy()
     }
 

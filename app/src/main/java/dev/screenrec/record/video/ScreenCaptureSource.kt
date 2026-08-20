@@ -53,12 +53,16 @@ class ScreenCaptureSource(private val projection: MediaProjection) {
         virtualDisplay?.setSurface(surface)
     }
 
+    /**
+     * Releases the virtual display and the callback but deliberately does NOT stop the
+     * projection: RecorderService obtained the token and is the only thing that can guarantee
+     * it is stopped on every exit path, including the ones where this class was never built.
+     */
     fun release() {
         virtualDisplay?.release()
         virtualDisplay = null
         callback?.let { projection.unregisterCallback(it) }
         callback = null
-        projection.stop()
     }
 
     private companion object {
