@@ -67,7 +67,14 @@ class OverlayController(private val context: Context) {
         if (remaining <= 0) {
             remove(view)
             if (countdown === view) countdown = null
-            onComplete()
+            // The teardown has to reach the compositor before the first frame is encoded.
+            // removeView() alone is not enough: it only queues the removal, and the main
+            // thread then spends a few hundred milliseconds configuring MediaCodec, the
+            // MediaStore entry and AudioRecord -- during which the countdown's secure layer
+            // is still composited and shows up as a black box in the middle of the video.
+            // removeViewImmediate() detaches synchronously; the settle delay gives the
+            // compositor a frame to drop the layer before capture starts.
+            handler.postDelayed({ onComplete() }, COMPOSITOR_SETTLE_MS)
             return
         }
         view.show(remaining)
@@ -77,7 +84,7 @@ class OverlayController(private val context: Context) {
     private fun remove(view: View?) {
         if (view == null) return
         try {
-            windowManager.removeView(view)
+            windowManager.removeViewImmediate(view)
         } catch (ignored: IllegalArgumentException) {
             // Already detached.
         }
@@ -90,8 +97,11 @@ class OverlayController(private val context: Context) {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            // FLAG_SECURE is the whole mechanism. FLAG_NOT_FOCUSABLE keeps the keyboard and
-            // back button behaviour of the app underneath intact.
+            // FLAG_SECURE stays even though One UI blacks the layer out rather than omitting
+            // it: no overlay is ever meant to be on screen while capturing, and if the
+            // ordering above ever slips, a black box is a better failure than leaking our UI
+            // into someone's recording. FLAG_NOT_FOCUSABLE keeps the keyboard and back
+            // button behaviour of the app underneath intact.
             WindowManager.LayoutParams.FLAG_SECURE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -102,5 +112,6 @@ class OverlayController(private val context: Context) {
 
     private companion object {
         const val TICK_MS = 1_000L
+        const val COMPOSITOR_SETTLE_MS = 150L
     }
 }
