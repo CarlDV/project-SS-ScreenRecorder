@@ -37,6 +37,22 @@ class RecorderService : Service(), RecordingController.Callbacks {
     private var projection: MediaProjection? = null
     private var startedAtElapsedMs = 0L
 
+    /**
+     * The status bar chip shows a static string, so the notification is re-posted once a
+     * second to make the counter advance. Cheap on a low-importance channel, and it is the
+     * only way to get a live timer into the chip.
+     */
+    private val counterTick = object : Runnable {
+        override fun run() {
+            if (!machine.isActive) return
+            notifications.refreshOngoing(
+                startedAtElapsedMs,
+                paused = machine.state == RecordingState.PAUSED
+            )
+            handler.postDelayed(this, COUNTER_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         notifications = RecorderNotifications(this).also { it.ensureChannel() }
@@ -119,6 +135,7 @@ class RecorderService : Service(), RecordingController.Callbacks {
 
     private fun handleStop() {
         if (!machine.transitionTo(RecordingState.STOPPING)) return
+        handler.removeCallbacks(counterTick)
         overlay.hideAll()
         // Draining blocks briefly; keep it off the main thread.
         Thread({ controller.stop() }, "stop-session").start()
@@ -128,6 +145,8 @@ class RecorderService : Service(), RecordingController.Callbacks {
         handler.post {
             machine.transitionTo(RecordingState.RECORDING)
             startedAtElapsedMs = SystemClock.elapsedRealtime()
+            handler.removeCallbacks(counterTick)
+            handler.postDelayed(counterTick, COUNTER_INTERVAL_MS)
             overlay.showPill(
                 onPauseToggle = {
                     if (machine.state == RecordingState.PAUSED) handleResume() else handlePause()
@@ -160,6 +179,7 @@ class RecorderService : Service(), RecordingController.Callbacks {
 
     private fun finish() {
         machine.transitionTo(RecordingState.IDLE)
+        handler.removeCallbacks(counterTick)
         overlay.hideAll()
         projection = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -167,6 +187,7 @@ class RecorderService : Service(), RecordingController.Callbacks {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(counterTick)
         overlay.hideAll()
         super.onDestroy()
     }
@@ -180,6 +201,7 @@ class RecorderService : Service(), RecordingController.Callbacks {
         private const val EXTRA_SOUND_MODE = "sound_mode"
         private const val EXTRA_PRESET = "preset"
         private const val COUNTDOWN_FROM = 3
+        private const val COUNTER_INTERVAL_MS = 1_000L
 
         fun startIntent(context: Context, resultData: Intent, config: RecordingConfig): Intent =
             Intent(context, RecorderService::class.java).apply {

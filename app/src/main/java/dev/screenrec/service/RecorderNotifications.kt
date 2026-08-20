@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.SystemClock
 import dev.screenrec.R
 
@@ -34,8 +35,8 @@ class RecorderNotifications(private val context: Context) {
     fun ongoing(startedAtElapsedMs: Long, paused: Boolean): Notification {
         // Notification.setWhen takes wall-clock time, but the session is timed on
         // elapsedRealtime; convert rather than mixing the two clocks.
-        val startedAtWallMs =
-            System.currentTimeMillis() - (SystemClock.elapsedRealtime() - startedAtElapsedMs)
+        val elapsedMs = SystemClock.elapsedRealtime() - startedAtElapsedMs
+        val startedAtWallMs = System.currentTimeMillis() - elapsedMs
         val builder = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_record)
             .setContentTitle(context.getString(R.string.notif_recording_title))
@@ -43,6 +44,16 @@ class RecorderNotifications(private val context: Context) {
             .setWhen(startedAtWallMs)
             .setShowWhen(!paused)
             .setUsesChronometer(!paused)
+            // Text for the Android 16 status bar chip. The chip renders a static string, not a
+            // Chronometer, so the service re-posts this once a second while recording.
+            .setShortCriticalText(ElapsedText.of(elapsedMs))
+            // Ask to be promoted to the chip. Notification.Builder#setRequestPromotedOngoing
+            // is behind a build flag and absent from android-36.jar, but it only writes this
+            // extra, so setting it directly is equivalent. The system still decides: it also
+            // requires an ongoing notification with a title, a promotable style, no custom
+            // views and no colorization -- all true here -- and the user must not have turned
+            // the feature off for this app.
+            .addExtras(Bundle().apply { putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true) })
 
         if (paused) {
             builder.setContentText(context.getString(R.string.notif_paused))
@@ -52,6 +63,11 @@ class RecorderNotifications(private val context: Context) {
         }
         builder.addAction(action(R.string.action_stop, RecorderService.stopIntent(context), 3))
         return builder.build()
+    }
+
+    /** Re-posts the ongoing notification so the chip's counter advances. */
+    fun refreshOngoing(startedAtElapsedMs: Long, paused: Boolean) {
+        manager.notify(ONGOING_ID, ongoing(startedAtElapsedMs, paused))
     }
 
     fun saved(displayName: String) {
@@ -89,5 +105,11 @@ class RecorderNotifications(private val context: Context) {
         private const val SAVED_ID = 2
         private const val ERROR_ID = 3
         private const val CHANNEL_ID = "recording"
+
+        /**
+         * Notification.EXTRA_REQUEST_PROMOTED_ONGOING, whose constant is not exposed in
+         * android-36.jar. Value read from the platform source for API 36.
+         */
+        private const val EXTRA_REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
     }
 }
