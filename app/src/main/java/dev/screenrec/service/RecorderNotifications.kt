@@ -18,6 +18,7 @@ import dev.screenrec.R
 class RecorderNotifications(private val context: Context) {
 
     private val manager = context.getSystemService(NotificationManager::class.java)
+    private val promotion = ChipPromotion()
 
     fun ensureChannel() {
         val channel = NotificationChannel(
@@ -49,11 +50,15 @@ class RecorderNotifications(private val context: Context) {
             .setShortCriticalText(ElapsedText.of(elapsedMs))
             // Ask to be promoted to the chip. Notification.Builder#setRequestPromotedOngoing
             // is behind a build flag and absent from android-36.jar, but it only writes this
-            // extra, so setting it directly is equivalent. The system still decides: it also
-            // requires an ongoing notification with a title, a promotable style, no custom
-            // views and no colorization -- all true here -- and the user must not have turned
-            // the feature off for this app.
+            // extra, so setting it directly is equivalent. The system still decides.
             .addExtras(Bundle().apply { putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true) })
+
+        // See ChipPromotion: the pre-ui_rich_ongoing branch promotes a colorized ongoing
+        // notification and rejects an uncolorized one, and the newer branch does the reverse.
+        if (promotion.colorized) {
+            builder.setColorized(true)
+            builder.setColor(RECORDING_RED)
+        }
 
         if (paused) {
             builder.setContentText(context.getString(R.string.notif_paused))
@@ -65,10 +70,28 @@ class RecorderNotifications(private val context: Context) {
         return builder.build()
     }
 
-    /** Re-posts the ongoing notification so the chip's counter advances. */
+    /**
+     * Re-posts the ongoing notification so the chip's counter advances, then checks whether the
+     * system promoted it and switches form once if it did not.
+     */
     fun refreshOngoing(startedAtElapsedMs: Long, paused: Boolean) {
         manager.notify(ONGOING_ID, ongoing(startedAtElapsedMs, paused))
+        if (promotion.onPostResult(promoted = isOngoingPromoted())) {
+            manager.notify(ONGOING_ID, ongoing(startedAtElapsedMs, paused))
+        }
     }
+
+    /**
+     * FLAG_PROMOTED_ONGOING is set by the system, never by the app, but the posting app is
+     * explicitly allowed to read it back -- which is the only way to find out whether the chip
+     * was granted.
+     */
+    private fun isOngoingPromoted(): Boolean =
+        manager.activeNotifications
+            .firstOrNull { it.id == ONGOING_ID }
+            ?.notification
+            ?.let { it.flags and Notification.FLAG_PROMOTED_ONGOING != 0 }
+            ?: false
 
     fun saved(displayName: String) {
         val notification = Notification.Builder(context, CHANNEL_ID)
@@ -105,6 +128,9 @@ class RecorderNotifications(private val context: Context) {
         private const val SAVED_ID = 2
         private const val ERROR_ID = 3
         private const val CHANNEL_ID = "recording"
+
+        /** Matches the red One UI uses for its own recording indicator. */
+        private const val RECORDING_RED = 0xFFE0342B.toInt()
 
         /**
          * Notification.EXTRA_REQUEST_PROMOTED_ONGOING, whose constant is not exposed in
