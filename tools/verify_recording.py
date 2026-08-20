@@ -22,11 +22,20 @@ MIN_AUDIO_COVERAGE = 0.8      # audio track must span most of the video
 
 
 def ffprobe(video: Path, *args: str) -> dict:
-    out = subprocess.run(
+    proc = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json", *args, str(video)],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    return json.loads(out)
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise NotAMediaFile(proc.stderr.strip() or "ffprobe could not read the file")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        raise NotAMediaFile(f"ffprobe returned unparseable output: {e}") from e
+
+
+class NotAMediaFile(Exception):
+    """The path exists but is not something ffprobe can decode."""
 
 
 def mean_volume_dbfs(video: Path) -> float | None:
@@ -190,10 +199,16 @@ def main() -> int:
         return 1
 
     print(f"Verifying {args.video} ({args.video.stat().st_size} bytes)")
-    failures = check_tracks(args.video, args.expect_audio or args.expect_sound)
-    failures += check_no_frozen_gap(args.video)
-    if args.expect_sound:
-        failures += check_audio_is_audible(args.video)
+    try:
+        failures = check_tracks(args.video, args.expect_audio or args.expect_sound)
+        failures += check_no_frozen_gap(args.video)
+        if args.expect_sound:
+            failures += check_audio_is_audible(args.video)
+    except NotAMediaFile as e:
+        # Usually means the pull grabbed the wrong path -- quote the remote path, which
+        # contains a space: adb shell "ls '/sdcard/DCIM/Screen recordings/'"
+        print(f"\nFAILED:\n  - not a readable video: {e}")
+        return 1
     if args.pill_region:
         region = tuple(int(part) for part in args.pill_region.split(","))
         if len(region) != 4:
