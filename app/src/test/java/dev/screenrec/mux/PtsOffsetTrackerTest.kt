@@ -7,6 +7,21 @@ import org.junit.Test
 
 class PtsOffsetTrackerTest {
 
+    /**
+     * The capture surface stamps frames with CLOCK_MONOTONIC -- time since boot -- so on a
+     * device up for twelve hours the first frame arrives with a PTS of twelve hours. Written
+     * to the container unchanged that becomes the file's duration, and it desyncs the audio,
+     * whose own timestamps start at zero. The first frame must land on zero.
+     */
+    @Test
+    fun rebasesTheFirstFrameToZero() {
+        val t = PtsOffsetTracker()
+        val uptimeUs = 43_374_000_000L // ~12h04m, the value that produced a 12:02:54 file
+        assertEquals(0L, t.adjust(uptimeUs))
+        assertEquals(33_000L, t.adjust(uptimeUs + 33_000L))
+        assertEquals(66_000L, t.adjust(uptimeUs + 66_000L))
+    }
+
     @Test
     fun passesTimestampsThroughUntouchedWhenNeverPaused() {
         val t = PtsOffsetTracker()
@@ -18,16 +33,17 @@ class PtsOffsetTrackerTest {
     @Test
     fun subtractsASinglePausedSpan() {
         val t = PtsOffsetTracker()
-        assertEquals(100L, t.adjust(100L))
+        assertEquals(0L, t.adjust(100L)) // base
         t.pause(200L)
         t.resume(1_200L) // paused for 1000us
-        assertEquals(300L, t.adjust(1_300L))
+        assertEquals(200L, t.adjust(1_300L)) // 1300 - 100 base - 1000 paused
         assertEquals(1_000L, t.pausedTotalUs)
     }
 
     @Test
     fun accumulatesAcrossManyPauses() {
         val t = PtsOffsetTracker()
+        assertEquals(0L, t.adjust(0L))
         t.pause(1_000L); t.resume(3_000L)   // +2000
         t.pause(5_000L); t.resume(5_500L)   // +500
         t.pause(9_000L); t.resume(19_000L)  // +10000
@@ -38,21 +54,30 @@ class PtsOffsetTrackerTest {
     @Test
     fun clampsFramesThatArriveDuringAPause() {
         val t = PtsOffsetTracker()
-        assertEquals(500L, t.adjust(500L))
+        assertEquals(0L, t.adjust(500L))
         t.pause(600L)
         // A frame already in flight when the surface detached must not regress.
-        assertEquals(500L, t.adjust(1_000L))
-        assertEquals(500L, t.adjust(1_500L))
+        assertEquals(0L, t.adjust(1_000L))
+        assertEquals(0L, t.adjust(1_500L))
         t.resume(2_600L)
-        assertEquals(700L, t.adjust(2_700L))
+        assertEquals(200L, t.adjust(2_700L)) // 2700 - 500 base - 2000 paused
     }
 
     @Test
     fun neverRegressesUnderOutOfOrderInput() {
         val t = PtsOffsetTracker()
-        assertEquals(1_000L, t.adjust(1_000L))
-        assertEquals(1_000L, t.adjust(900L))
-        assertEquals(1_100L, t.adjust(1_100L))
+        assertEquals(0L, t.adjust(1_000L))
+        assertEquals(0L, t.adjust(900L))
+        assertEquals(100L, t.adjust(1_100L))
+    }
+
+    @Test
+    fun neverEmitsANegativeTimestamp() {
+        val t = PtsOffsetTracker()
+        // Pause bookkeeping that precedes the first frame must not push it below zero.
+        t.pause(1_000L)
+        t.resume(5_000L)
+        assertEquals(0L, t.adjust(6_000L))
     }
 
     @Test
