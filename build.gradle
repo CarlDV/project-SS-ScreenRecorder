@@ -1,0 +1,21 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // AGP 9 has built-in Kotlin support and REJECTS the org.jetbrains.kotlin.android
+        // plugin. Its built-in Kotlin defaults to 2.2.10, which is not in the offline
+        // cache; this classpath entry pins the toolchain to cached 2.3.20. Removing it
+        // fails the build with missing kotlin-build-tools-impl-2.2.10.
+        classpath 'com.android.tools.build:gradle:9.0.1'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20'
+    }
+    // AGP 9.0.1 -> sdk-common 32.0.1 asks for kotlin-reflect 2.2.10, absent from the
+    // cache. 2.2.0 is cached with its POM and serves AGP's internal reflection.
+    configurations.classpath {
+        resolutionStrategy {
+            force 'org.jetbrains.kotlin:kotlin-reflect:2.2.0'
+        }
+    }
+}

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Screen recorder</string>
+    <string name="channel_name">Screen recording</string>
+    <string name="notif_recording_title">Recording screen</string>
+    <string name="notif_paused">Paused</string>
+    <string name="notif_saved_title">Recording saved</string>
+    <string name="notif_error_title">Recording failed</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_resume">Resume</string>
+    <string name="action_stop">Stop</string>
+    <string name="sheet_title">Screen recorder</string>
+    <string name="sheet_sound">Sound</string>
+    <string name="sheet_quality">Video quality</string>
+    <string name="sheet_start">Start recording</string>
+    <string name="sound_none">No sound</string>
+    <string name="sound_media">Media</string>
+    <string name="sound_media_mic">Media and mic</string>
+    <string name="sound_hint">Some apps block recording of their audio.</string>
+    <string name="tile_label">Screen recorder</string>
+</resources>

@@ -31,3 +31,7 @@ output-metadata.json
 # Local verification scratch
 /scratch/
 *.mp4
+
+.build/
+app/build/
+local.properties
