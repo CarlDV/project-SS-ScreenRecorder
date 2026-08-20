@@ -11,9 +11,14 @@ import android.view.WindowManager
 
 /**
  * Every window this class creates carries FLAG_SECURE, which is what keeps the controls out
- * of the recording. [renderPillDuringCapture] is the escape hatch: set it false and the pill
- * is never added at all, leaving the notification as the only control surface. That is the
- * fallback if the platform turns out not to honour FLAG_SECURE for mirrored displays.
+ * of the recording.
+ *
+ * [renderPillDuringCapture] defaults to **false** because FLAG_SECURE turned out not to omit
+ * the layer on One UI 8 -- it blacks the region out in the mirror instead, which puts a black
+ * box in the finished video. The spec's requirement is that nothing of ours reaches the
+ * recording, so the pill is not rendered during capture at all and the notification's
+ * Pause/Stop actions are the control surface. Set this true to experiment on a build where
+ * secure layers really are omitted.
  */
 class OverlayController(private val context: Context) {
 
@@ -23,7 +28,7 @@ class OverlayController(private val context: Context) {
     private var pill: PillView? = null
     private var countdown: CountdownView? = null
 
-    var renderPillDuringCapture: Boolean = true
+    var renderPillDuringCapture: Boolean = false
 
     fun showCountdown(from: Int, onComplete: () -> Unit) {
         if (!canDrawOverlays()) {

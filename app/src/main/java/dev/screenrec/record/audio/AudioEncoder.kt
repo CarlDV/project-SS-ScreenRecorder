@@ -43,16 +43,26 @@ class AudioEncoder(private val listener: Listener) {
         drainThread = Thread({ drainLoop() }, "audio-drain").also { it.start() }
     }
 
-    fun submit(pcm: ByteArray, length: Int, ptsUs: Long) {
+    /**
+     * Queues as much of [pcm] as one codec input buffer will hold and returns the number of
+     * bytes actually consumed, which may be less than [length] -- an AAC input buffer is
+     * typically 4 KiB while an AudioRecord read is 8 KiB. Callers must loop on the remainder
+     * and advance their timestamp by the returned count. Returns 0 when no buffer is
+     * available, which the caller should treat as "drop the rest of this read".
+     */
+    fun submit(pcm: ByteArray, offset: Int, length: Int, ptsUs: Long): Int {
         try {
             val index = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
-            if (index < 0) return // encoder is behind; dropping beats blocking capture
-            val buffer = codec.getInputBuffer(index) ?: return
+            if (index < 0) return 0 // encoder is behind; dropping beats blocking capture
+            val buffer = codec.getInputBuffer(index) ?: return 0
             buffer.clear()
-            buffer.put(pcm, 0, length)
-            codec.queueInputBuffer(index, 0, length, ptsUs, 0)
+            val chunk = alignedChunk(length, buffer.remaining(), BYTES_PER_FRAME)
+            if (chunk > 0) buffer.put(pcm, offset, chunk)
+            codec.queueInputBuffer(index, 0, chunk, ptsUs, 0)
+            return chunk
         } catch (e: IllegalStateException) {
             listener.onError(e)
+            return 0
         }
     }
 
@@ -109,10 +119,24 @@ class AudioEncoder(private val listener: Listener) {
         }
     }
 
-    private companion object {
-        const val BIT_RATE = 128_000
-        const val DEQUEUE_TIMEOUT_US = 10_000L
-        const val END_OF_STREAM_TIMEOUT_US = 100_000L
-        const val DRAIN_JOIN_TIMEOUT_MS = 2_000L
+    companion object {
+        private const val BIT_RATE = 128_000
+        private const val DEQUEUE_TIMEOUT_US = 10_000L
+        private const val END_OF_STREAM_TIMEOUT_US = 100_000L
+        private const val DRAIN_JOIN_TIMEOUT_MS = 2_000L
+
+        /** Stereo 16-bit: one frame is 4 bytes. */
+        private val BYTES_PER_FRAME = AudioCaptureSource.CHANNEL_COUNT * 2
+
+        /**
+         * Largest whole-frame slice of [available] bytes that fits in [capacity]. Splitting a
+         * frame across two input buffers would desynchronise the channels, so the result is
+         * always a multiple of [bytesPerFrame].
+         */
+        fun alignedChunk(available: Int, capacity: Int, bytesPerFrame: Int): Int {
+            val fits = minOf(available, capacity).coerceAtLeast(0)
+            if (bytesPerFrame <= 1) return fits
+            return fits - (fits % bytesPerFrame)
+        }
     }
 }

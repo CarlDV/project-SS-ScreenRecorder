@@ -59,4 +59,25 @@ class AudioPtsTest {
         assertEquals(0L, pts.framesWritten)
         assertEquals(0L, pts.nextPtsUs(4))
     }
+
+    @Test
+    fun currentPtsUsDoesNotAdvanceOnItsOwn() {
+        val pts = stereo()
+        assertEquals(0L, pts.currentPtsUs())
+        assertEquals(0L, pts.currentPtsUs())
+        pts.advance(4_410 * 4)
+        assertEquals(100_000L, pts.currentPtsUs())
+    }
+
+    @Test
+    fun advancingInChunksMatchesAdvancingAllAtOnce() {
+        // One AudioRecord read may be split across several encoder input buffers; the
+        // timestamps must come out identical either way.
+        val chunked = stereo()
+        repeat(4) { chunked.advance(1_102 * 4) }
+        val whole = stereo()
+        whole.advance(4_408 * 4)
+        assertEquals(whole.currentPtsUs(), chunked.currentPtsUs())
+        assertEquals(whole.framesWritten, chunked.framesWritten)
+    }
 }

@@ -14,9 +14,18 @@ class AudioPts(
     var framesWritten: Long = 0L
         private set
 
-    fun nextPtsUs(byteCount: Int): Long {
-        val pts = framesWritten * 1_000_000L / sampleRate
+    /** Timestamp of the next byte to be written, without consuming anything. */
+    fun currentPtsUs(): Long = framesWritten * 1_000_000L / sampleRate
+
+    /** Accounts for bytes actually handed to the encoder. Partial frames are ignored. */
+    fun advance(byteCount: Int) {
         framesWritten += byteCount / bytesPerFrame
+    }
+
+    /** Timestamp for the buffer about to be written; then accounts for it. */
+    fun nextPtsUs(byteCount: Int): Long {
+        val pts = currentPtsUs()
+        advance(byteCount)
         return pts
     }
 

@@ -115,8 +115,17 @@ class RecordingController(
             audioEncoder = AudioEncoder(audioListener()).also { it.start() }
             audioCapture = AudioCaptureSource(projection, config.soundMode).also { source ->
                 source.start { pcm, length ->
-                    val pts = audioPts?.nextPtsUs(length) ?: return@start
-                    audioEncoder?.submit(pcm, length, pts)
+                    val pts = audioPts ?: return@start
+                    val encoder = audioEncoder ?: return@start
+                    // One read is larger than one AAC input buffer, so feed it in slices and
+                    // advance the timestamp by what the encoder actually took.
+                    var offset = 0
+                    while (offset < length) {
+                        val consumed = encoder.submit(pcm, offset, length - offset, pts.currentPtsUs())
+                        if (consumed <= 0) break // encoder is behind; drop the remainder
+                        pts.advance(consumed)
+                        offset += consumed
+                    }
                 }
             }
         }
