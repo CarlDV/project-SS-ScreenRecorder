@@ -17,6 +17,8 @@ from PIL import Image
 MAX_FRAME_GAP_SECONDS = 0.75  # a pause must not leave a visible freeze
 NEAR_BLACK = 40               # 0-255 luminance below this counts as pill background
 MAX_DARK_FRACTION = 0.01      # 1% tolerance for genuinely dark UI pixels
+SILENCE_DBFS = -60.0          # mean volume below this is silence, not quiet audio
+MIN_AUDIO_COVERAGE = 0.8      # audio track must span most of the video
 
 
 def ffprobe(video: Path, *args: str) -> dict:
@@ -25,6 +27,49 @@ def ffprobe(video: Path, *args: str) -> dict:
         check=True, capture_output=True, text=True,
     ).stdout
     return json.loads(out)
+
+
+def mean_volume_dbfs(video: Path) -> float | None:
+    """ffmpeg's volumedetect, which reports mean and peak level over the whole track."""
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "info", "-i", str(video), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    for line in proc.stderr.splitlines():
+        if "mean_volume:" in line:
+            return float(line.split("mean_volume:")[1].split("dB")[0].strip())
+    return None
+
+
+def check_audio_is_audible(video: Path) -> list[str]:
+    """Distinguishes the three cases a user reports as "no audio"."""
+    info = ffprobe(video, "-show_streams", "-show_format")
+    audio = [s for s in info.get("streams", []) if s.get("codec_type") == "audio"]
+    if not audio:
+        return ["no audio track at all -- the encoder or muxer never received audio"]
+
+    total = float(info.get("format", {}).get("duration", 0.0))
+    audio_duration = float(audio[0].get("duration") or 0.0)
+    failures = []
+    if total > 0 and audio_duration > 0:
+        coverage = audio_duration / total
+        print(f"  audio spans {audio_duration:.2f}s of {total:.2f}s ({coverage * 100:.0f}%)")
+        if coverage < MIN_AUDIO_COVERAGE:
+            failures.append(
+                f"audio covers only {coverage * 100:.0f}% of the video; the encoder starved"
+            )
+
+    mean = mean_volume_dbfs(video)
+    if mean is None:
+        failures.append("could not measure volume")
+    else:
+        print(f"  mean volume: {mean:.1f} dBFS")
+        if mean <= SILENCE_DBFS:
+            failures.append(
+                f"audio track is present but silent ({mean:.1f} dBFS). Either nothing was "
+                "playing, or the source app opts out of playback capture"
+            )
+    return failures
 
 
 def check_tracks(video: Path, expect_audio: bool) -> list[str]:
@@ -124,6 +169,11 @@ def main() -> int:
     parser.add_argument("--video", required=True, type=Path)
     parser.add_argument("--expect-audio", action="store_true")
     parser.add_argument(
+        "--expect-sound",
+        action="store_true",
+        help="additionally require the audio track to be audible, not just present",
+    )
+    parser.add_argument(
         "--pill-region",
         help="x,y,w,h of the pill's on-screen bounds, from dumpsys window",
     )
@@ -140,8 +190,10 @@ def main() -> int:
         return 1
 
     print(f"Verifying {args.video} ({args.video.stat().st_size} bytes)")
-    failures = check_tracks(args.video, args.expect_audio)
+    failures = check_tracks(args.video, args.expect_audio or args.expect_sound)
     failures += check_no_frozen_gap(args.video)
+    if args.expect_sound:
+        failures += check_audio_is_audible(args.video)
     if args.pill_region:
         region = tuple(int(part) for part in args.pill_region.split(","))
         if len(region) != 4:
