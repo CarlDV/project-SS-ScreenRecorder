@@ -1,17 +1,23 @@
-# Screen recorder for the Galaxy A17 5G
+# Screen recorder
 
-A screen recorder for Samsung phones that don't ship one. The A17 5G runs One UI 8 but
-Samsung withholds its built-in recorder from the A line, so this fills the gap: Quick
-Settings tile, three sound modes, recordings in the Gallery, and styling that borrows One
-UI's own widgets rather than imitating them.
+A screen recorder for Android 13 and up: Quick Settings tile, three sound modes including
+internal audio, recordings in the Gallery, and no floating controls burned into the video.
 
-Kotlin, no runtime dependencies at all — no AndroidX, no Material, no coroutines. minSdk 33
-makes the compat libraries unnecessary, and `Theme.DeviceDefault` on a Samsung device *is*
-One UI, so the sheet inherits Samsung's font, ripple and radio styling for free.
+Nothing in it is device-specific — it uses framework APIs only, and `Theme.DeviceDefault`
+means it wears whichever OEM skin it lands on. It exists because Samsung withholds its
+built-in recorder from the A line, so a Galaxy A17 5G (SM-A176B, Android 16 / One UI 8) is
+what it was written for and the only phone it has actually been run on. Everything below that
+is marked as verified was verified there; on other hardware, treat it as untested rather than
+broken.
+
+Kotlin, with no runtime dependencies at all — no AndroidX, no Material, no coroutines. minSdk
+33 makes the compat libraries unnecessary, and on a Samsung device `Theme.DeviceDefault` *is*
+One UI, so the sheet inherits the system font, ripple and radio styling for free rather than
+imitating them.
 
 ## Status
 
-Working, verified on a physical Galaxy A17 5G (SM-A176B, Android 16):
+Verified on the A17:
 
 - Recording at 1080p/720p/480p, H.264, with correct duration and playable output
 - **No sound** and **Media** capture; recordings land in `DCIM/Screen recordings` and appear
@@ -23,8 +29,9 @@ Not proven yet, and honest about it:
 
 - **Media and mic** mixing has not been listened to end to end
 - The Android 16 status bar chip ("island") counter — the app requests promotion and adapts
-  if declined, but whether One UI 8 grants it is unconfirmed. The capsule you see while
-  recording may be Samsung's own system indicator, which no app can write into.
+  if declined, but whether One UI 8 grants it is unconfirmed. The capsule shown while
+  recording may be the system's own recording indicator, which no app can write into.
+- Anything on non-Samsung hardware, or on Android 13–15 as opposed to 16
 
 ## Install
 
@@ -56,11 +63,13 @@ begins.
 would be burned into every frame. The intended mechanism was `FLAG_SECURE`, which asks the
 compositor to omit secure layers from a non-secure mirror.
 
-On One UI 8 it does not omit them — it renders them **black**, which put a black box in the
-finished video. Since the requirement is that nothing of ours reaches the recording, the pill
-is not drawn during capture at all and the notification is the control surface.
-`OverlayController.renderPillDuringCapture` flips it back on for anyone testing a build where
-secure layers really are excluded.
+**On One UI 8 it does not omit them — it renders them black**, which put a black box in the
+finished video. Whether other devices behave this way is untested; the AOSP behaviour is
+supposed to be omission. Since the requirement is that nothing of ours reaches the recording,
+the pill is not drawn during capture at all and the notification is the control surface.
+`OverlayController.renderPillDuringCapture` flips it back on, which is the first thing to try
+on hardware where secure layers really are excluded — check the result with the pixel
+assertion in `tools/verify_recording.py` rather than by eye.
 
 The countdown overlay still appears, and is torn down with `removeViewImmediate()` plus a
 short settle delay before the first frame is encoded — `removeView()` alone only queues the
@@ -151,6 +160,8 @@ appears where an overlay sat. Needs `ffmpeg`, `ffprobe` and Pillow.
   The encoder's hint tracks the panel's refresh rate, capped at 60.
 - **No pen annotation, selfie overlay or in-app recordings list.** Samsung's own recorder has
   no recordings list either — video goes to the Gallery.
+- **`DCIM/Screen recordings` is Samsung's location**, used everywhere for consistency. On
+  other OEMs the folder is simply created if absent.
 
 ## Documents
 
