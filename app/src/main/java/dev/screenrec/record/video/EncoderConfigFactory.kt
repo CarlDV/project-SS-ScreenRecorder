@@ -15,7 +15,8 @@ object EncoderConfigFactory {
         displayWidth: Int,
         displayHeight: Int,
         preset: QualityPreset,
-        caps: EncoderCapabilities
+        caps: EncoderCapabilities,
+        frameRate: Int = 30
     ): VideoFormatSpec {
         val shortEdge = minOf(displayWidth, displayHeight)
         var targetShort = minOf(preset.shortEdge, shortEdge) // never upscale
@@ -27,7 +28,7 @@ object EncoderConfigFactory {
             size = sizeFor(displayWidth, displayHeight, targetShort, caps)
             attempts++
         }
-        return VideoFormatSpec(size.first, size.second, preset.bitrate)
+        return VideoFormatSpec(size.first, size.second, preset.bitrate, frameRate)
     }
 
     private fun sizeFor(

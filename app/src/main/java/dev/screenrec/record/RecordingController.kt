@@ -73,7 +73,7 @@ class RecordingController(
         var spec: VideoFormatSpec? = null
         while (preset != null && encoder == null) {
             val candidate = EncoderConfigFactory.create(
-                metrics.widthPx, metrics.heightPx, preset, caps
+                metrics.widthPx, metrics.heightPx, preset, caps, metrics.frameRate
             )
             encoder = try {
                 VideoEncoder(candidate, videoListener())

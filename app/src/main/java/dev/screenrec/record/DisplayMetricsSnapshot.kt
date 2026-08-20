@@ -15,9 +15,15 @@ data class DisplayMetricsSnapshot(
     val widthPx: Int,
     val heightPx: Int,
     val densityDpi: Int,
-    val rotationDegrees: Int
+    val rotationDegrees: Int,
+    val frameRate: Int
 ) {
     companion object {
+
+        /** Encoding 1080p above this on a mid-range SoC costs more than it returns. */
+        private const val MAX_FRAME_RATE = 60
+        private const val MIN_FRAME_RATE = 24
+        private const val DEFAULT_FRAME_RATE = 30
 
         /**
          * Reads the display through DisplayManager rather than Context.getDisplay(). The
@@ -38,7 +44,8 @@ data class DisplayMetricsSnapshot(
                 widthPx = metrics.widthPixels,
                 heightPx = metrics.heightPixels,
                 densityDpi = metrics.densityDpi,
-                rotationDegrees = rotationDegrees(display.rotation)
+                rotationDegrees = rotationDegrees(display.rotation),
+                frameRate = frameRateFor(display.refreshRate)
             )
         }
 
@@ -48,6 +55,18 @@ data class DisplayMetricsSnapshot(
             Surface.ROTATION_180 -> 180
             Surface.ROTATION_270 -> 270
             else -> 0
+        }
+
+        /**
+         * A mirrored VirtualDisplay pushes a frame whenever the screen changes, up to the
+         * panel's refresh rate -- so the encoder's frame-rate hint should describe that, not a
+         * fixed 30. The hint does not throttle anything; it tells the rate controller how many
+         * frames the bitrate has to cover, and setting it too low makes it budget for half the
+         * frames it actually receives.
+         */
+        fun frameRateFor(refreshRateHz: Float): Int {
+            if (refreshRateHz.isNaN() || refreshRateHz <= 0f) return DEFAULT_FRAME_RATE
+            return Math.round(refreshRateHz).coerceIn(MIN_FRAME_RATE, MAX_FRAME_RATE)
         }
     }
 }
