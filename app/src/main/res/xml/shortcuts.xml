@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher's long-press menu. Tapping the icon starts a recording, so this is the only way
+     to the sound, quality and floating-control choices. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:icon="@drawable/ic_settings"
+        android:shortcutShortLabel="@string/shortcut_settings_short"
+        android:shortcutLongLabel="@string/shortcut_settings_long">
+        <intent
+            android:action="dev.screenrec.SETTINGS"
+            android:targetClass="dev.screenrec.ui.SettingsActivity"
+            android:targetPackage="dev.screenrec" />
+    </shortcut>
+</shortcuts>

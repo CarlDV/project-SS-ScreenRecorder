@@ -12,6 +12,11 @@ interface MuxerTarget<F> {
 /**
  * Holds the muxer closed until every expected track has been added, queueing samples that
  * arrive in the meantime and flushing them in timestamp order.
+ *
+ * Every method is synchronised. The video and audio encoders drain on separate threads, so
+ * [addTrack] and [writeSample] genuinely run concurrently: an unguarded [queue] could be
+ * appended to while [startAndFlush] iterates it, and a ConcurrentModificationException thrown
+ * from an encoder thread takes the process down rather than failing the recording.
  */
 class MuxerGate<F>(
     private val target: MuxerTarget<F>,
@@ -24,6 +29,7 @@ class MuxerGate<F>(
         val flags: Int
     )
 
+    private val lock = Any()
     private val trackIndices = HashMap<TrackKind, Int>()
     private val queue = ArrayList<Pending>()
     private var stopped = false
@@ -32,9 +38,11 @@ class MuxerGate<F>(
         private set
 
     fun addTrack(kind: TrackKind, format: F) {
-        if (kind !in expected || trackIndices.containsKey(kind) || isStarted) return
-        trackIndices[kind] = target.addTrack(format)
-        if (trackIndices.keys == expected) startAndFlush()
+        synchronized(lock) {
+            if (kind !in expected || trackIndices.containsKey(kind) || isStarted) return
+            trackIndices[kind] = target.addTrack(format)
+            if (trackIndices.keys == expected) startAndFlush()
+        }
     }
 
     fun writeSample(
@@ -45,22 +53,27 @@ class MuxerGate<F>(
         ptsUs: Long,
         flags: Int
     ) {
-        if (stopped || kind !in expected) return
-        val index = trackIndices[kind]
-        if (isStarted && index != null) {
-            target.writeSample(index, data, offset, size, ptsUs, flags)
-            return
+        synchronized(lock) {
+            if (stopped || kind !in expected) return
+            val index = trackIndices[kind]
+            if (isStarted && index != null) {
+                target.writeSample(index, data, offset, size, ptsUs, flags)
+                return
+            }
+            queue += Pending(kind, data.copyOfRange(offset, offset + size), ptsUs, flags)
         }
-        queue += Pending(kind, data.copyOfRange(offset, offset + size), ptsUs, flags)
     }
 
     fun stop() {
-        if (stopped) return
-        stopped = true
-        queue.clear()
-        if (isStarted) target.stop()
+        synchronized(lock) {
+            if (stopped) return
+            stopped = true
+            queue.clear()
+            if (isStarted) target.stop()
+        }
     }
 
+    /** Caller holds [lock]. */
     private fun startAndFlush() {
         target.start()
         isStarted = true

@@ -2,20 +2,32 @@
 <resources>
     <string name="app_name">Screen recorder</string>
     <string name="channel_name">Screen recording</string>
+    <string name="channel_saved_name">Saved recordings</string>
     <string name="notif_recording_title">Recording screen</string>
     <string name="notif_paused">Paused</string>
     <string name="notif_saved_title">Recording saved</string>
     <string name="notif_error_title">Recording failed</string>
+    <string name="notif_start_failed">Could not start the recording</string>
     <string name="action_pause">Pause</string>
     <string name="action_resume">Resume</string>
     <string name="action_stop">Stop</string>
-    <string name="sheet_title">Screen recorder</string>
+    <string name="settings_title">Screen recorder</string>
+    <string name="settings_start_hint">Tap the app icon to start recording. While recording, tap
+        it again to stop.</string>
+    <string name="shortcut_settings_short">Settings</string>
+    <string name="shortcut_settings_long">Recorder settings</string>
     <string name="sheet_sound">Sound</string>
     <string name="sheet_quality">Video quality</string>
-    <string name="sheet_start">Start recording</string>
     <string name="sound_none">No sound</string>
     <string name="sound_media">Media</string>
     <string name="sound_media_mic">Media and mic</string>
     <string name="sound_hint">Some apps block recording of their audio.</string>
     <string name="tile_label">Screen recorder</string>
+    <string name="tile_label_stop">Stop recording</string>
+    <string name="on_screen_controls">Floating controls</string>
+    <string name="on_screen_controls_hint">A draggable pill with the timer, pause and stop. It is
+        part of the recording — turn it off for clean video and use the notification instead.</string>
+    <string name="needs_notifications">Recording needs the notification permission. Allow it in
+        Settings, then try again.</string>
+    <string name="could_not_stop">Could not reach the recorder</string>
 </resources>

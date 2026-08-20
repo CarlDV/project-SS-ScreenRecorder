@@ -48,4 +48,38 @@ class ChipPromotionTest {
         assertFalse(p.onPostResult(promoted = true))
         assertTrue(p.colorized)
     }
+
+    /**
+     * The one-second re-post exists only to advance the chip's static counter. On a device that
+     * has no chip it rebuilds the notification row under the user's finger instead, which is why
+     * Stop was hard to hit there -- so the service needs to know when there is nothing left to
+     * wait for.
+     */
+    @Test
+    fun isUnsettledUntilBothFormsHaveBeenTried() {
+        val p = ChipPromotion()
+        assertFalse(p.settled)
+        p.onPostResult(promoted = false)
+        assertFalse("the colorized form has not been posted yet", p.settled)
+        p.onPostResult(promoted = false)
+        assertTrue(p.settled)
+        assertFalse(p.promoted)
+    }
+
+    @Test
+    fun settlesImmediatelyWhenTheFirstFormIsPromoted() {
+        val p = ChipPromotion()
+        p.onPostResult(promoted = true)
+        assertTrue(p.settled)
+        assertTrue(p.promoted)
+    }
+
+    @Test
+    fun settlesAsPromotedWhenTheColorizedFallbackWorks() {
+        val p = ChipPromotion()
+        p.onPostResult(promoted = false)
+        p.onPostResult(promoted = true)
+        assertTrue(p.settled)
+        assertTrue(p.promoted)
+    }
 }

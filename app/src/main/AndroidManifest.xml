@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Playback capture and the mic both go through the RECORD_AUDIO app-op, and from
+         Android 14 an app that holds that op inside a foreground service has to declare the
+         microphone type as well. Without it the op is dropped the moment the start sheet
+         closes and the app stops counting as in-use, which failed the recording outright. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
@@ -12,23 +17,39 @@
         android:label="@string/app_name"
         android:theme="@android:style/Theme.DeviceDefault.DayNight">
 
+        <!-- Draws nothing: tapping the icon runs the permission gates, asks for consent and
+             starts the service. The choices moved to the long-press menu below. -->
         <activity
-            android:name=".ui.StartSheetActivity"
+            android:name=".ui.StartActivity"
             android:excludeFromRecents="true"
             android:exported="true"
             android:label="@string/app_name"
             android:launchMode="singleTop"
-            android:theme="@style/Theme.Sheet">
+            android:theme="@style/Theme.Invisible">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Exported because the launcher starts it from the long-press menu. It reads and writes
+             this app's own preferences and nothing else, so there is nothing here to abuse. -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/settings_title"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Sheet" />
 
         <service
             android:name=".service.RecorderService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="mediaProjection|microphone" />
 
         <service
             android:name=".tile.RecorderTileService"

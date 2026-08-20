@@ -4,18 +4,19 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.util.DisplayMetrics
 import android.view.Display
-import android.view.Surface
 
 /**
- * The display facts a recording needs, captured once at start. Rotation is frozen here on
- * purpose: a live MediaCodec stream cannot be resized, so v1 records at the orientation it
- * began in.
+ * The display facts a recording needs, captured once at start. Size is frozen here on purpose:
+ * a live MediaCodec stream cannot be resized, so v1 records at the orientation it began in.
+ *
+ * There is deliberately no rotation here. [android.view.Display.getRealMetrics] is already
+ * rotation-adjusted and the mirror follows the display, so the frames need no correction; see
+ * RecordingController.ORIENTATION_HINT_DEGREES.
  */
 data class DisplayMetricsSnapshot(
     val widthPx: Int,
     val heightPx: Int,
     val densityDpi: Int,
-    val rotationDegrees: Int,
     val frameRate: Int
 ) {
     companion object {
@@ -44,17 +45,8 @@ data class DisplayMetricsSnapshot(
                 widthPx = metrics.widthPixels,
                 heightPx = metrics.heightPixels,
                 densityDpi = metrics.densityDpi,
-                rotationDegrees = rotationDegrees(display.rotation),
                 frameRate = frameRateFor(display.refreshRate)
             )
-        }
-
-        /** Surface.ROTATION_* to degrees; anything unrecognised is treated as upright. */
-        fun rotationDegrees(surfaceRotation: Int): Int = when (surfaceRotation) {
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 0
         }
 
         /**

@@ -9,82 +9,98 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.widget.Button
-import android.widget.RadioGroup
+import android.widget.Toast
 import dev.screenrec.R
 import dev.screenrec.output.MediaStoreOutput
-import dev.screenrec.record.QualityPreset
 import dev.screenrec.record.RecordingConfig
 import dev.screenrec.record.SoundMode
 import dev.screenrec.service.RecorderService
+import dev.screenrec.service.RecorderState
 import dev.screenrec.settings.SettingsRepository
 
 /**
- * Bottom sheet: pick sound and quality, clear the permission gates, consent to capture.
+ * The launcher entry point, and the only path to starting a recording. Draws nothing at all: it
+ * clears the permission gates, asks for capture consent, hands the token to the service, and
+ * finishes.
+ *
+ * It used to be a bottom sheet with the sound and quality choices on it, which made tapping the
+ * icon a two-screen affair and -- because the sheet was a wrap_content column with no scroll
+ * view -- put its Start button off the bottom of a landscape display, where it could not be
+ * reached at all. The choices now live in [SettingsActivity], behind the launcher's long-press
+ * menu, and are read from [SettingsRepository] here.
+ *
  * Each gate returns here and calls proceed() again, so the order is explicit and there is
  * exactly one path to starting the service.
  */
-class StartSheetActivity : Activity() {
+class StartActivity : Activity() {
 
     private lateinit var settings: SettingsRepository
 
+    /** Gates already put to the user, so a decline dismisses this rather than looping. */
+    private val asked = mutableSetOf<Int>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_start_sheet)
         settings = SettingsRepository(this)
+
+        // Tapping the icon during a session is a stop, the same as tapping the tile: with the
+        // sheet gone there is nothing else the icon could usefully do, and it is one more place
+        // to stop from when the shade is awkward to reach.
+        if (RecorderState.active) {
+            stopSession()
+            finish()
+            return
+        }
 
         // A previous session killed mid-recording leaves an invisible pending row behind.
         MediaStoreOutput(this).cleanUpOrphans()
+        proceed()
+    }
 
-        val soundGroup = findViewById<RadioGroup>(R.id.sound_group)
-        val qualityGroup = findViewById<RadioGroup>(R.id.quality_group)
-
-        soundGroup.check(
-            when (settings.soundMode) {
-                SoundMode.NONE -> R.id.sound_none
-                SoundMode.MEDIA -> R.id.sound_media
-                SoundMode.MEDIA_AND_MIC -> R.id.sound_media_mic
-            }
-        )
-        qualityGroup.check(
-            when (settings.preset) {
-                QualityPreset.P1080 -> R.id.quality_1080
-                QualityPreset.P720 -> R.id.quality_720
-                QualityPreset.P480 -> R.id.quality_480
-            }
-        )
-
-        soundGroup.setOnCheckedChangeListener { _, id ->
-            settings.soundMode = when (id) {
-                R.id.sound_none -> SoundMode.NONE
-                R.id.sound_media_mic -> SoundMode.MEDIA_AND_MIC
-                else -> SoundMode.MEDIA
-            }
+    private fun stopSession() {
+        // The recorder is already a running foreground service, so this is a permitted background
+        // start -- but a stale flag would make it a violation, and crashing the launcher icon is
+        // worse than a stop that does nothing.
+        try {
+            startService(RecorderService.stopIntent(this))
+        } catch (e: IllegalStateException) {
+            Toast.makeText(this, R.string.could_not_stop, Toast.LENGTH_SHORT).show()
         }
-        qualityGroup.setOnCheckedChangeListener { _, id ->
-            settings.preset = when (id) {
-                R.id.quality_720 -> QualityPreset.P720
-                R.id.quality_480 -> QualityPreset.P480
-                else -> QualityPreset.P1080
-            }
-        }
-
-        findViewById<Button>(R.id.start).setOnClickListener { proceed() }
     }
 
     private fun config() = RecordingConfig(settings.soundMode, settings.preset)
 
-    /** Advances to the next unmet requirement, or launches the consent dialog. */
+    /**
+     * Advances to the next unmet requirement, or launches the consent dialog.
+     *
+     * Each gate is asked at most once per attempt. Asking again on the way back is what turned
+     * a declined permission into a loop: a permanently denied POST_NOTIFICATIONS returns from
+     * requestPermissions instantly, and re-requesting from the result callback spun the main
+     * thread; backing out of the overlay screen re-opened it forever.
+     */
     private fun proceed() {
         if (!granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            if (asked(REQ_NOTIFICATIONS)) {
+                // Without it there is no notification, and the foreground service the recording
+                // needs cannot show one -- so this is the one gate worth refusing to pass.
+                toast(R.string.needs_notifications)
+                finish()
+                return
+            }
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
             return
         }
-        if (config().soundMode != SoundMode.NONE && !granted(Manifest.permission.RECORD_AUDIO)) {
+        if (config().soundMode != SoundMode.NONE &&
+            !granted(Manifest.permission.RECORD_AUDIO) &&
+            !asked(REQ_MIC)
+        ) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
             return
         }
-        if (!Settings.canDrawOverlays(this)) {
+        if (!Settings.canDrawOverlays(this) && !asked(REQ_OVERLAY)) {
+            // Optional: only the countdown and the floating pill use it, and both degrade to
+            // nothing. canDrawOverlays also lies for a moment after being granted, so a second
+            // trip through here would bounce the user back into Settings for no reason.
             startActivityForResult(
                 Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -96,6 +112,9 @@ class StartSheetActivity : Activity() {
         }
         requestCapture()
     }
+
+    /** True if this gate has already been put to the user during this attempt. */
+    private fun asked(requestCode: Int): Boolean = !asked.add(requestCode)
 
     private fun requestCapture() {
         val manager = getSystemService(MediaProjectionManager::class.java)
@@ -130,7 +149,7 @@ class StartSheetActivity : Activity() {
                 if (resultCode == RESULT_OK && data != null) {
                     startForegroundService(RecorderService.startIntent(this, data, config()))
                 }
-                // Either way the sheet's work is done; consent denial simply dismisses it.
+                // Either way this activity's work is done; consent denial simply dismisses it.
                 finish()
             }
         }
@@ -138,6 +157,10 @@ class StartSheetActivity : Activity() {
 
     private fun granted(permission: String): Boolean =
         checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun toast(messageRes: Int) {
+        Toast.makeText(this, messageRes, Toast.LENGTH_LONG).show()
+    }
 
     private companion object {
         const val REQ_NOTIFICATIONS = 1

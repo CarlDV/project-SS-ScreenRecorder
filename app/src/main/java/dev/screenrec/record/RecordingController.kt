@@ -16,7 +16,6 @@ import dev.screenrec.record.video.EncoderConfigFactory
 import dev.screenrec.record.video.ScreenCaptureSource
 import dev.screenrec.record.video.VideoEncoder
 import dev.screenrec.record.video.VideoEncoderFactory
-import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -31,7 +30,9 @@ class RecordingController(
 ) {
     interface Callbacks {
         fun onStarted()
-        fun onSaved(displayName: String)
+
+        /** [warning] is non-null when the take is usable but not what was asked for. */
+        fun onSaved(uri: Uri, displayName: String, warning: String?)
         fun onError(message: String)
         fun onProjectionLost()
     }
@@ -51,15 +52,27 @@ class RecordingController(
     private val videoDone = CountDownLatch(1)
     private var audioDone: CountDownLatch? = null
 
+    /** Set when the session was usable but not what the user asked for; see [Callbacks.onSaved]. */
+    private var warning: String? = null
+
     @Volatile private var finalised = false
     @Volatile private var paused = false
+    private var started = false
 
+    /**
+     * One controller per session. The [finalised] latch is deliberately sticky -- finalising
+     * twice would publish a released descriptor -- so a reused instance can never save or stop
+     * again, which previously left the notification and the projection up until the process was
+     * killed. Failing loudly here is better than that.
+     */
     fun start(
         projection: MediaProjection,
         config: RecordingConfig,
         metrics: DisplayMetricsSnapshot,
         callbacks: Callbacks
     ): Boolean {
+        check(!started) { "RecordingController is single-use" }
+        started = true
         this.callbacks = callbacks
         val caps = VideoEncoderFactory.capabilitiesFor()
         if (caps == null) {
@@ -99,8 +112,21 @@ class RecordingController(
         pendingUri = pending.uri
         displayName = pending.displayName
 
-        val muxerSink = MuxerSink(pending.descriptor, metrics.rotationDegrees)
-        val expected = if (config.soundMode == SoundMode.NONE) {
+        val muxerSink = MuxerSink(pending.descriptor, ORIENTATION_HINT_DEGREES)
+
+        // Open the audio records before the gate exists. They are the failure-prone part of a
+        // session, and a gate told to expect an audio track that never arrives never opens the
+        // muxer at all -- which would lose the video as well as the sound.
+        val audioSource = if (config.soundMode == SoundMode.NONE) {
+            null
+        } else {
+            AudioCaptureSource(projection, config.soundMode).takeIf { it.prepare() }
+        }
+        if (audioSource == null && config.soundMode != SoundMode.NONE) {
+            warning = "Saved without sound: this device or app would not share its audio"
+        }
+
+        val expected = if (audioSource == null) {
             setOf(TrackKind.VIDEO)
         } else {
             setOf(TrackKind.VIDEO, TrackKind.AUDIO)
@@ -109,23 +135,22 @@ class RecordingController(
         gate = MuxerGate(muxerSink, expected)
         videoEncoder = encoder
 
-        if (config.soundMode != SoundMode.NONE) {
+        if (audioSource != null) {
             audioDone = CountDownLatch(1)
             audioPts = AudioPts(AudioCaptureSource.SAMPLE_RATE, AudioCaptureSource.CHANNEL_COUNT)
             audioEncoder = AudioEncoder(audioListener()).also { it.start() }
-            audioCapture = AudioCaptureSource(projection, config.soundMode).also { source ->
-                source.start { pcm, length ->
-                    val pts = audioPts ?: return@start
-                    val encoder = audioEncoder ?: return@start
-                    // One read is larger than one AAC input buffer, so feed it in slices and
-                    // advance the timestamp by what the encoder actually took.
-                    var offset = 0
-                    while (offset < length) {
-                        val consumed = encoder.submit(pcm, offset, length - offset, pts.currentPtsUs())
-                        if (consumed <= 0) break // encoder is behind; drop the remainder
-                        pts.advance(consumed)
-                        offset += consumed
-                    }
+            audioCapture = audioSource
+            audioSource.start { pcm, length ->
+                val pts = audioPts ?: return@start
+                val encoder = audioEncoder ?: return@start
+                // One read is larger than one AAC input buffer, so feed it in slices and
+                // advance the timestamp by what the encoder actually took.
+                var offset = 0
+                while (offset < length) {
+                    val consumed = encoder.submit(pcm, offset, length - offset, pts.currentPtsUs())
+                    if (consumed <= 0) break // encoder is behind; drop the remainder
+                    pts.advance(consumed)
+                    offset += consumed
                 }
             }
         }
@@ -169,6 +194,15 @@ class RecordingController(
         finalise()
     }
 
+    /**
+     * Releases whatever a [start] that threw part-way managed to build, without a callback --
+     * the caller is the one reporting the failure.
+     */
+    fun abandon() {
+        callbacks = null
+        finalise()
+    }
+
     private fun videoListener() = object : VideoEncoder.Listener {
         override fun onFormat(format: MediaFormat) {
             gate?.addTrack(TrackKind.VIDEO, format)
@@ -207,38 +241,44 @@ class RecordingController(
         }
     }
 
-    /** A full disk surfaces here; keep what was written rather than losing the take. */
+    /**
+     * A full disk surfaces here, and so does anything else the sample path can throw. The catch
+     * is deliberately broad: this runs on an encoder drain thread, where an escaping exception
+     * takes the whole process down and loses the take along with it.
+     */
     private inline fun writeGuarded(block: () -> Unit) {
         try {
             block()
-        } catch (e: IOException) {
-            Log.w(TAG, "Write failed; finalising early", e)
-            finalise()
-        } catch (e: IllegalStateException) {
-            Log.w(TAG, "Muxer rejected a sample; finalising early", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "Sample rejected; finalising early", e)
             finalise()
         }
     }
 
+    /**
+     * Runs on whichever thread noticed the session was over, so every step is guarded
+     * individually: a release that throws must not skip the ones after it, and must not skip
+     * the callback that lets the service tear the notification and the projection down.
+     */
     private fun finalise() {
         if (finalised) return
         finalised = true
 
-        audioCapture?.release()
-        capture?.release()
-        videoEncoder?.release()
-        audioEncoder?.release()
+        closeQuietly("audio capture") { audioCapture?.release() }
+        closeQuietly("screen capture") { capture?.release() }
+        closeQuietly("video encoder") { videoEncoder?.release() }
+        closeQuietly("audio encoder") { audioEncoder?.release() }
 
         val wroteSomething = gate?.isStarted == true
-        gate?.stop()
-        sink?.release()
+        closeQuietly("muxer gate") { gate?.stop() }
+        closeQuietly("muxer") { sink?.release() }
 
         val uri = pendingUri
         if (uri != null && wroteSomething) {
-            output.publish(uri)
-            callbacks?.onSaved(displayName)
+            closeQuietly("publish") { output.publish(uri) }
+            callbacks?.onSaved(uri, displayName, warning)
         } else {
-            if (uri != null) output.discard(uri)
+            if (uri != null) closeQuietly("discard") { output.discard(uri) }
             callbacks?.onError("Nothing was recorded")
         }
 
@@ -251,6 +291,14 @@ class RecordingController(
         pendingUri = null
     }
 
+    private inline fun closeQuietly(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release $what", e)
+        }
+    }
+
     /**
      * Surface timestamps come from CLOCK_MONOTONIC, which is what nanoTime reads, so pause
      * marks are on the same timeline as the frames they bracket.
@@ -260,5 +308,14 @@ class RecordingController(
     private companion object {
         const val TAG = "RecordingController"
         const val DRAIN_TIMEOUT_SECONDS = 3L
+
+        /**
+         * Always zero. A mirrored VirtualDisplay emits frames in the display's *current*
+         * orientation -- which is why rotating mid-recording rotates the content inside the
+         * frame rather than resizing it -- so the pixels are already the right way up. Passing
+         * the display rotation here instead made a recording started in landscape carry a 90
+         * degree hint on top of already-landscape pixels, and every player turned it sideways.
+         */
+        const val ORIENTATION_HINT_DEGREES = 0
     }
 }

@@ -5,6 +5,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.atomic.AtomicInteger
 
 class MuxerGateTest {
 
@@ -166,5 +169,71 @@ class MuxerGateTest {
         gate.stop()
 
         assertEquals(1, target.stopCount)
+    }
+
+    /**
+     * The two encoders drain on their own threads, so the audio track really can be added while
+     * video samples are still being queued. Unguarded, that appended to the pending list while
+     * the flush iterated it: a ConcurrentModificationException on an encoder thread, which takes
+     * the process down and loses the recording rather than failing it.
+     */
+    @Test
+    fun addingATrackWhileTheOtherWritesLosesNothing() {
+        val samplesPerRun = 200
+        repeat(RACE_RUNS) { run ->
+            val target = CountingTarget()
+            val gate = MuxerGate(target, setOf(TrackKind.VIDEO, TrackKind.AUDIO))
+            gate.addTrack(TrackKind.VIDEO, "video/avc")
+            val ready = CyclicBarrier(2)
+            val failures = CopyOnWriteArrayList<Throwable>()
+
+            val writer = Thread {
+                ready.await()
+                repeat(samplesPerRun) { i ->
+                    gate.writeSample(TrackKind.VIDEO, bytes(1), 0, 1, i.toLong(), 0)
+                }
+            }
+            val adder = Thread {
+                ready.await()
+                // Somewhere in the middle of the run, not at a fixed sample.
+                Thread.sleep(0L, (run % 10) * 20_000)
+                gate.addTrack(TrackKind.AUDIO, "audio/mp4a-latm")
+            }
+            val handler = Thread.UncaughtExceptionHandler { _, e -> failures += e }
+            writer.uncaughtExceptionHandler = handler
+            adder.uncaughtExceptionHandler = handler
+
+            writer.start()
+            adder.start()
+            writer.join()
+            adder.join()
+            // The gate only opens once both tracks are in, so flush the audio side if the
+            // adder lost the race entirely.
+            gate.addTrack(TrackKind.AUDIO, "audio/mp4a-latm")
+
+            assertTrue("threw: ${failures.firstOrNull()}", failures.isEmpty())
+            assertEquals(samplesPerRun, target.writes.get())
+        }
+    }
+
+    private class CountingTarget : MuxerTarget<String> {
+        val writes = AtomicInteger()
+        private var tracks = 0
+
+        override fun addTrack(format: String): Int = tracks++
+
+        override fun start() = Unit
+
+        override fun writeSample(
+            trackIndex: Int, data: ByteArray, offset: Int, size: Int, ptsUs: Long, flags: Int
+        ) {
+            writes.incrementAndGet()
+        }
+
+        override fun stop() = Unit
+    }
+
+    private companion object {
+        const val RACE_RUNS = 60
     }
 }

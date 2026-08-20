@@ -7,6 +7,7 @@ import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
+import android.util.Log
 import dev.screenrec.record.SoundMode
 
 /**
@@ -29,15 +30,43 @@ class AudioCaptureSource(
     @Volatile private var paused = false
 
     fun start(onPcm: (ByteArray, Int) -> Unit) {
-        if (soundMode == SoundMode.NONE) return
-
-        playbackRecord = buildPlaybackRecord().also { it.startRecording() }
-        if (soundMode.needsMic) {
-            micRecord = buildMicRecord().also { it.startRecording() }
-        }
-
+        if (playbackRecord == null) return
         reading = true
         readThread = Thread({ readLoop(onPcm) }, "audio-read").also { it.start() }
+    }
+
+    /**
+     * Opens the AudioRecords. Split out from [start] because this is the step that fails, and
+     * the caller has to know whether the session will carry an audio track before it builds
+     * the muxer gate -- a gate told to expect audio that never arrives never opens the muxer,
+     * which loses the video too.
+     *
+     * Every failure mode is a plain runtime exception rather than a return value:
+     * AudioRecord.Builder rejects a format it cannot honour with UnsupportedOperationException,
+     * startRecording throws IllegalStateException when the record came back uninitialised, and
+     * a dropped RECORD_AUDIO app-op surfaces as either. Recording silently without sound beats
+     * taking the process down.
+     */
+    fun prepare(): Boolean {
+        if (soundMode == SoundMode.NONE) return false
+        try {
+            playbackRecord = buildPlaybackRecord().also { it.startRecording() }
+        } catch (e: Exception) {
+            Log.w(TAG, "Playback capture unavailable; recording without sound", e)
+            release()
+            return false
+        }
+        if (soundMode.needsMic) {
+            // A refused mic is not worth losing the media audio over: carry on with one source.
+            try {
+                micRecord = buildMicRecord().also { it.startRecording() }
+            } catch (e: Exception) {
+                Log.w(TAG, "Mic unavailable; recording media audio only", e)
+                micRecord?.release()
+                micRecord = null
+            }
+        }
+        return true
     }
 
     fun pause() {
@@ -127,6 +156,7 @@ class AudioCaptureSource(
     companion object {
         const val SAMPLE_RATE = 44_100
         const val CHANNEL_COUNT = 2
+        private const val TAG = "AudioCaptureSource"
         private const val BUFFER_BYTES = 8_192
         private const val READ_JOIN_TIMEOUT_MS = 2_000L
     }

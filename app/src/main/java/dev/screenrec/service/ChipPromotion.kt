@@ -20,6 +20,14 @@ class ChipPromotion {
     var colorized: Boolean = false
         private set
 
+    /** True once both forms have been tried, or one of them worked: nothing left to learn. */
+    var settled: Boolean = false
+        private set
+
+    /** True if the system ever came back having set FLAG_PROMOTED_ONGOING. */
+    var promoted: Boolean = false
+        private set
+
     private var switched = false
 
     /**
@@ -27,7 +35,15 @@ class ChipPromotion {
      * @return true if the notification should be re-posted in the newly chosen form
      */
     fun onPostResult(promoted: Boolean): Boolean {
-        if (promoted || switched) return false
+        if (promoted) {
+            this.promoted = true
+            settled = true
+            return false
+        }
+        if (switched) {
+            settled = true
+            return false
+        }
         switched = true
         colorized = true
         return true
