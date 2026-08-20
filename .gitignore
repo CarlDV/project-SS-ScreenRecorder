@@ -7,6 +7,8 @@ captures/
 .externalNativeBuild/
 .cxx/
 *.apk
+# ...except the release build, which the README tells people to adb install.
+!/dist/*.apk
 *.aab
 *.ap_
 *.dex
