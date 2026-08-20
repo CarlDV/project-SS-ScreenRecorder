@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// Stamp the commit into versionName so `adb shell dumpsys package dev.screenrec | grep
+// versionName` says exactly which build is on the device. Over a slow install-test-report
+// loop, "which APK is that?" is otherwise unanswerable.
+def gitSha = providers.exec {
+    commandLine 'git', 'rev-parse', '--short', 'HEAD'
+}.standardOutput.asText.get().trim()
+
 android {
     namespace = 'dev.screenrec'
     compileSdk = 36
@@ -8,8 +15,8 @@ android {
         applicationId = 'dev.screenrec'
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = '1.0'
+        versionCode = 2
+        versionName = "1.0-${gitSha}"
     }
 
     compileOptions {
