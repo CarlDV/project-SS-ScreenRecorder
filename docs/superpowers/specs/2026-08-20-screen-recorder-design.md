@@ -44,6 +44,8 @@ Every API below was checked against `~/Android/Sdk/platforms/android-36/android.
 | `ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` | `= 32` |
 | `WindowManager.LayoutParams.FLAG_SECURE` / `TYPE_APPLICATION_OVERLAY` | `= 8192` / `= 2038` |
 | `MediaStore.MediaColumns.IS_PENDING`, `RELATIVE_PATH` | present |
+| `VirtualDisplay.setSurface` / `resize` | present — `setSurface(null)` is the pause mechanism |
+| `VideoCapabilities.getWidthAlignment` / `getHeightAlignment` / `isSizeSupported` | present — encoder reports its own alignment, so none is assumed |
 | `TileService.onClick`, `startActivityAndCollapse(PendingIntent)` | present |
 
 ## Keeping the pill out of the recording
@@ -61,7 +63,7 @@ Related detail: the countdown overlay carries `FLAG_SECURE` for the same reason,
 Small units, each with one purpose and a testable boundary.
 
 ```
-ui/         StartSheetActivity, StartSheet (Compose), theme/OneUi{Color,Type,Theme}
+ui/         StartSheetActivity + XML layouts, One UI drawables/colors
 tile/       RecorderTileService              — QS tile
 service/    RecorderService                  — foreground service, owns the session
             RecorderNotifications            — channel, chronometer, pause/stop actions
@@ -72,19 +74,21 @@ record/     RecordingController              — orchestrates sources, encoders,
             VideoEncoder                     — AVC MediaCodec + input Surface
             EncoderConfigFactory             — display metrics + preset → codec format
   audio/    AudioCaptureSource               — mic and/or playback-capture AudioRecord
-            PcmMixer                         — saturating mix of two PCM streams
-            AudioEncoder                     — AAC MediaCodec
+            PcmMixer                         — saturating mix, mono→stereo upmix
+            AudioEncoder                     — AAC MediaCodec, sample-count PTS
   mux/      MuxerSink                        — MediaMuxer wrapper, lock-guarded
             MuxerGate                        — defers start() until all tracks added
-            PtsOffsetTracker                 — removes paused spans from timestamps
+            PtsOffsetTracker                 — removes paused spans from video PTS
 output/     MediaStoreOutput                 — pending entry → descriptor → publish
             RecordingFilename                — Screen_recording_yyyyMMdd_HHmmss.mp4
 overlay/    OverlayController                — WindowManager windows, FLAG_SECURE
-            PillView, CountdownView          — plain Views, not Compose
+            PillView, CountdownView          — plain Views
 settings/   SettingsRepository               — SharedPreferences
 ```
 
-The overlay uses plain `View`s deliberately: Compose in a `WindowManager` window needs lifecycle, saved-state and recomposer plumbing that buys nothing for a pill with a timer and three buttons.
+The entire UI is XML Views, including the start sheet. Compose was dropped: the offline Gradle cache has no `org.jetbrains.kotlin.android` plugin marker, a single static sheet of radio buttons gains nothing from recomposition, and the overlay had to be plain Views regardless — one paradigm beats two.
+
+Further, the UI uses **framework widgets only** — no AppCompat, no Material Components — and themes derive from `android:Theme.DeviceDefault`. This began as a constraint (see Build constraints) but is the better choice on merit: `DeviceDefault` on a Samsung device *is* One UI, so the system font, ripple, switch and radio styling come from Samsung's own framework rather than from Google's Material library imitating it. Importing Material Components would mean fighting One UI to look like One UI.
 
 ## Flow and ordering
 
@@ -106,9 +110,9 @@ Consent is requested fresh for every session — Android 14+ will not let a toke
 
 **AudioCaptureSource.** *No sound* builds nothing. *Media* builds one `AudioRecord` from an `AudioPlaybackCaptureConfiguration` matching usages `MEDIA`, `GAME` and `UNKNOWN`. *Media and mic* builds that plus a `MIC` record and mixes. Inherent platform limitation, to be documented in-app rather than worked around: apps may opt out of playback capture, and DRM-protected audio is always excluded, so some content records silent.
 
-**PcmMixer.** Sums 16-bit samples with saturation instead of wrapping, and tolerates unequal buffer lengths by treating the shorter stream as silence past its end.
+**PcmMixer.** Sums 16-bit samples with saturation instead of wrapping, and tolerates unequal buffer lengths by treating the shorter stream as silence past its end. Also upmixes the mic's mono capture to stereo before mixing, since the mic commonly refuses a stereo channel mask while playback capture yields stereo.
 
-**PtsOffsetTracker.** Pause detaches the virtual display's surface (`setSurface(null)`) so frames stop arriving, and stops draining audio. Both streams then need the paused span removed, or playback shows a frozen gap and audio drifts. The tracker accumulates paused duration and subtracts it, guaranteeing monotonically non-decreasing timestamps across any pause pattern.
+**PtsOffsetTracker.** Pause detaches the virtual display's surface (`setSurface(null)`) so frames stop arriving, and stops draining audio. Video timestamps come from the capture surface and therefore track wall clock, so the paused span must be subtracted or playback shows a frozen gap; the tracker accumulates paused duration and subtracts it, guaranteeing monotonically non-decreasing timestamps across any pause pattern. Audio needs no equivalent: its presentation timestamps are derived from the cumulative sample count, which simply stops advancing while paused, so pause correctness falls out for free. The tracker is video-only.
 
 **MuxerGate.** `MediaMuxer.start()` is illegal before every track is added, and encoders emit `INFO_OUTPUT_FORMAT_CHANGED` at unpredictable moments. The gate collects expected formats — one track for *No sound*, two otherwise — queues any samples arriving early, then starts and flushes the queue in timestamp order.
 
@@ -127,14 +131,15 @@ Consent is requested fresh for every session — Android 14+ will not let a toke
 
 ## Testing
 
-Six units carry the subtle logic and are pure JVM-testable, driven test-first:
+Seven units carry the subtle logic and are pure JVM-testable, driven test-first:
 
 1. `PtsOffsetTracker` — monotonic non-decreasing output across arbitrary pause/resume patterns.
-2. `PcmMixer` — saturation at both rails, unequal lengths.
+2. `PcmMixer` — saturation at both rails, unequal lengths, mono→stereo upmix.
 3. `EncoderConfigFactory` — aspect preserved, alignment honoured for arbitrary reported values (2, 16, …), bitrate mapping, capability clamping, with fake capabilities injected so no device is needed.
 4. `RecordingStateMachine` — legal transitions, illegal ones rejected.
 5. `MuxerGate` — no start before tracks complete, queued samples flushed in order.
-6. `RecordingFilename` — timestamp format.
+6. `RecordingFilename` — timestamp format under a fixed clock and zone.
+7. `AudioPts` — sample-count-derived timestamps, including that a paused gap produces no discontinuity.
 
 Everything else — projection consent, real encoding, audio routing, and the `FLAG_SECURE` exclusion — is verified on the physical A17 over `adb`: install, drive the app, pull the MP4, confirm the video decodes, the audio track exists, pause produces no gap, and the pill's region shows app content rather than the pill.
 
@@ -146,4 +151,13 @@ Everything else — projection consent, real encoding, audio routing, and the `F
 
 ## Build constraints
 
-The sandbox reaches only `localhost`, so Gradle builds **offline** against the existing cache. Versions pinned to what is cached and mutually consistent: Gradle 9.3.1, AGP 9.1.1, Kotlin 2.3.20, Compose compiler 2.3.20, compose-bom 2026.03.01, Material3 1.4.0, activity-compose 1.13.0. Debug signing, sideloaded via `adb install`.
+The sandbox reaches only `localhost`, so Gradle builds **offline** against the existing cache. Four cache facts dictate the stack, each verified by inspecting `~/.gradle/caches/modules-2/files-2.1` rather than assumed:
+
+- **No `org.jetbrains.kotlin.android` plugin marker.** The `plugins {}` block cannot resolve Kotlin offline. AGP and KGP go on the root `buildscript { classpath(...) }` instead, which resolves the cached jars directly; subprojects then use `plugins { id("...") }` with no version, served from that classpath. The `com.android.application` marker exists at **9.0.1 only** — not 9.1.1 — which pins AGP.
+- **No `kotlin-test`, no `kotlinx-coroutines-core`.** Tests use **JUnit 4.13.2** with hand-written fakes, and the app uses **no coroutines** — plain threads and `Handler`, which suits explicit MediaCodec drain loops anyway.
+- **No `androidx.databinding:viewbinding`.** viewBinding cannot be enabled; views are found with `findViewById`.
+- **No `androidx.annotation:annotation` root module** (only `annotation-jvm`), so AppCompat's transitive graph will not resolve offline. Rather than fight this, the app takes **zero runtime dependencies** beyond `kotlin-stdlib` — no AndroidX, no Material. Every screen is a framework widget under `android:Theme.DeviceDefault`, which as noted above is the higher-fidelity choice anyway. The risk class disappears with the dependencies.
+
+Pinned versions, all cached and mutually consistent: Gradle **9.3.1** (run directly from `~/.gradle/wrapper/dists/gradle-9.3.1-bin/23ovyewtku6u96viwx3xl3oks/gradle-9.3.1/bin/gradle`, avoiding a wrapper download), AGP **9.0.1**, Kotlin **2.3.20** (compiler-embeddable and build-tools-impl both cached, so compilation runs offline), JUnit **4.13.2** with Hamcrest **1.3**. JDK **21**. compileSdk/targetSdk **36**, minSdk **33**. Debug signing, sideloaded via `adb install`.
+
+Host-side verification tooling is present and needs no network: `ffprobe` for track inspection, `ffmpeg` for frame extraction, and Python **3** with **PIL 10.2.0** for pixel assertions — which is what makes the `FLAG_SECURE` proof a measurement rather than an opinion.
